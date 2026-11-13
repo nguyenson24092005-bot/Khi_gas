@@ -1,0 +1,422 @@
+
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fire Guard - Giám sát báo cháy</title>
+
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <style>
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #f1f5f9;
+      color: #172033;
+    }
+
+    header {
+      background: #172033;
+      color: white;
+      padding: 22px;
+      text-align: center;
+    }
+
+    header h1 { margin: 0 0 8px; }
+    header p { margin: 0; color: #cbd5e1; }
+
+    main {
+      max-width: 1050px;
+      margin: 24px auto;
+      padding: 0 16px;
+    }
+
+    .connection, .card {
+      background: white;
+      border-radius: 14px;
+      padding: 20px;
+      margin-bottom: 18px;
+      box-shadow: 0 3px 12px #0000000b;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .value {
+      font-size: 34px;
+      font-weight: bold;
+      margin: 16px 0 8px;
+    }
+
+    .gas { color: #d97706; }
+    .temp { color: #dc2626; }
+
+    .status {
+      display: inline-block;
+      padding: 7px 12px;
+      border-radius: 20px;
+      background: #e2e8f0;
+      font-size: 14px;
+    }
+
+    .online { background: #dcfce7; color: #166534; }
+    .offline { background: #fee2e2; color: #991b1b; }
+
+    .alarm {
+      background: #fee2e2;
+      color: #991b1b;
+      padding: 12px;
+      border-radius: 8px;
+      font-weight: bold;
+      margin-top: 10px;
+    }
+
+    button {
+      padding: 11px 16px;
+      border: 0;
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: bold;
+      margin: 5px 5px 5px 0;
+    }
+
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    .primary { background: #2563eb; color: white; }
+    .on { background: #16a34a; color: white; }
+    .off { background: #64748b; color: white; }
+
+    .device {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+      border-top: 1px solid #e2e8f0;
+      padding-top: 14px;
+      margin-top: 14px;
+    }
+
+    canvas { max-height: 270px; }
+
+    @media (max-width: 650px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+
+<body>
+<header>
+  <h1>🔥 FIRE GUARD</h1>
+  <p>Hệ thống giám sát khí gas và nhiệt độ qua MQTT</p>
+</header>
+
+<main>
+  <section class="connection">
+    <b>Trạng thái Broker:</b>
+    <span id="connection" class="status offline">Đang kết nối...</span>
+    <p>Chế độ: <b id="modeText">AUTO</b></p>
+    <p id="alarmText">Chưa nhận dữ liệu cảm biến.</p>
+  </section>
+
+  <section class="grid">
+    <div class="card">
+      <h3>Tín hiệu cảm biến MQ-2</h3>
+      <div class="value gas" id="gasValue">--</div>
+      <small>Giá trị ADC thô (0–4095), chưa quy đổi sang ppm</small>
+      <span class="status" id="gasStatus">Chưa có dữ liệu</span>
+    </div>
+
+    <div class="card">
+      <h3>Nhiệt độ</h3>
+      <div class="value temp" id="tempValue">-- °C</div>
+      <span class="status" id="tempStatus">Chưa có dữ liệu</span>
+    </div>
+  </section>
+
+  <section class="grid">
+    <div class="card">
+      <h3>Biểu đồ khí gas</h3>
+      <canvas id="gasChart"></canvas>
+    </div>
+
+    <div class="card">
+      <h3>Biểu đồ nhiệt độ</h3>
+      <canvas id="tempChart"></canvas>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Điều khiển thiết bị</h2>
+    <p>Chọn chế độ hoạt động:</p>
+
+    <button class="primary" onclick="setMode('AUTO')">
+      Chế độ tự động
+    </button>
+
+    <button class="primary" onclick="setMode('MANUAL')">
+      Chế độ thủ công
+    </button>
+
+    <div class="device">
+      <div>
+        <b>🌀 Quạt thông gió</b>
+        <p>Trạng thái: <span id="fanState">Chưa rõ</span></p>
+      </div>
+      <div>
+        <button id="fanOn" class="on" onclick="controlDevice('fan','ON')">
+          Bật quạt
+        </button>
+        <button id="fanOff" class="off" onclick="controlDevice('fan','OFF')">
+          Tắt quạt
+        </button>
+      </div>
+    </div>
+
+    <div class="device">
+      <div>
+        <b>💧 Máy bơm</b>
+        <p>Trạng thái: <span id="pumpState">Chưa rõ</span></p>
+      </div>
+      <div>
+        <button id="pumpOn" class="on" onclick="controlDevice('pump','ON')">
+          Bật bơm
+        </button>
+        <button id="pumpOff" class="off" onclick="controlDevice('pump','OFF')">
+          Tắt bơm
+        </button>
+      </div>
+    </div>
+
+    <p id="controlHint">
+      Đang ở chế độ AUTO. Nút thiết bị chỉ hoạt động trong chế độ MANUAL.
+    </p>
+  </section>
+</main>
+
+<script>
+  // Phai trung khop voi topic trong sketch.ino
+  const BASE = "lab3_khi_gas/son_31432337/";
+
+  const TOPIC_SENSOR = BASE + "sensor";
+  const TOPIC_STATUS = BASE + "status";
+  const TOPIC_MODE   = BASE + "mode/set";
+  const TOPIC_FAN    = BASE + "fan/set";
+  const TOPIC_PUMP   = BASE + "pump/set";
+
+  let currentMode = "AUTO";
+  let lastGas = null;
+  let lastTemp = null;
+  let gasAlarm = false;
+  let tempAlarm = false;
+
+  // Ket noi WebSocket den HiveMQ Public Broker.
+  const client = mqtt.connect(
+    "wss://broker.hivemq.com:8884/mqtt",
+    {
+      clientId: "FireGuardWeb_" +
+        Math.random().toString(16).slice(2),
+      clean: true,
+      connectTimeout: 10000,
+      reconnectPeriod: 3000
+    }
+  );
+
+  function setConnection(connected) {
+    const el = document.getElementById("connection");
+    el.textContent = connected ? "Đã kết nối" : "Mất kết nối";
+    el.className = "status " + (connected ? "online" : "offline");
+  }
+
+  client.on("connect", () => {
+    setConnection(true);
+
+    client.subscribe([
+      TOPIC_SENSOR,
+      TOPIC_STATUS
+    ]);
+
+    // Dong bo che do hien thi voi ESP32
+    client.publish(TOPIC_MODE, currentMode);
+  });
+
+  client.on("reconnect", () => setConnection(false));
+  client.on("close", () => setConnection(false));
+  client.on("error", err => console.error("MQTT:", err));
+
+  // Tao bieu do
+  function createChart(canvasId, label, color) {
+    return new Chart(document.getElementById(canvasId), {
+      type: "line",
+      data: {
+        labels: [],
+        datasets: [{
+          label,
+          data: [],
+          borderColor: color,
+          borderWidth: 2,
+          pointRadius: 2,
+          tension: 0.25
+        }]
+      },
+      options: {
+        responsive: true,
+        animation: false,
+        scales: {
+          x: { title: { display: true, text: "Thời gian" } },
+          y: { beginAtZero: true }
+        }
+      }
+    });
+  }
+
+  const gasChart = createChart(
+    "gasChart", "MQ-2 (ADC thô)", "#d97706"
+  );
+
+  const tempChart = createChart(
+    "tempChart", "Nhiệt độ (°C)", "#dc2626"
+  );
+
+  function addPoint(chart, value) {
+    const time = new Date().toLocaleTimeString("vi-VN");
+
+    chart.data.labels.push(time);
+    chart.data.datasets[0].data.push(value);
+
+    // Chi hien thi toi da 30 diem gan nhat
+    if (chart.data.labels.length > 30) {
+      chart.data.labels.shift();
+      chart.data.datasets[0].data.shift();
+    }
+
+    chart.update("none");
+  }
+
+  function showAlarm() {
+    const el = document.getElementById("alarmText");
+    const alarms = [];
+
+    if (gasAlarm) alarms.push("CẢNH BÁO KHÍ GAS");
+    if (tempAlarm) alarms.push("CẢNH BÁO NHIỆT ĐỘ");
+
+    if (alarms.length) {
+      el.textContent = alarms.join(" | ");
+      el.className = "alarm";
+    } else {
+      el.textContent = "Chưa nhận thấy điều kiện cảnh báo.";
+      el.className = "";
+    }
+
+    document.getElementById("gasStatus").textContent =
+      gasAlarm ? "Vượt ngưỡng" : "Bình thường";
+
+    document.getElementById("tempStatus").textContent =
+      tempAlarm ? "Vượt ngưỡng" : "Bình thường";
+  }
+
+  function updateModeUI() {
+    document.getElementById("modeText").textContent = currentMode;
+
+    const manual = currentMode === "MANUAL";
+
+    ["fanOn", "fanOff", "pumpOn", "pumpOff"].forEach(id => {
+      document.getElementById(id).disabled = !manual;
+    });
+
+    document.getElementById("controlHint").textContent = manual
+      ? "Chế độ MANUAL: có thể gửi lệnh điều khiển. Cảnh báo tại ESP32 vẫn được ưu tiên."
+      : "Chế độ AUTO: ESP32 tự điều khiển theo ngưỡng cảm biến.";
+  }
+
+  function updateDeviceState(data) {
+    if (typeof data.fan === "boolean") {
+      document.getElementById("fanState").textContent =
+        data.fan ? "BẬT" : "TẮT";
+    }
+
+    if (typeof data.pump === "boolean") {
+      document.getElementById("pumpState").textContent =
+        data.pump ? "BẬT" : "TẮT";
+    }
+
+    if (data.mode === "AUTO" || data.mode === "MANUAL") {
+      currentMode = data.mode;
+      updateModeUI();
+    }
+
+    if (typeof data.gas_alarm === "boolean") {
+      gasAlarm = data.gas_alarm;
+    }
+
+    if (typeof data.temp_alarm === "boolean") {
+      tempAlarm = data.temp_alarm;
+    }
+
+    showAlarm();
+  }
+
+  client.on("message", (topic, message) => {
+    try {
+      const data = JSON.parse(message.toString());
+
+      if (topic === TOPIC_SENSOR) {
+        if (Number.isFinite(data.gas_adc)) {
+          lastGas = data.gas_adc;
+          document.getElementById("gasValue").textContent =
+            lastGas + " ADC";
+          addPoint(gasChart, lastGas);
+        }
+
+        if (Number.isFinite(data.temperature)) {
+          lastTemp = data.temperature;
+          document.getElementById("tempValue").textContent =
+            lastTemp.toFixed(1) + " °C";
+          addPoint(tempChart, lastTemp);
+        }
+      }
+
+      if (topic === TOPIC_STATUS) {
+        updateDeviceState(data);
+      }
+    } catch (error) {
+      console.error("Payload MQTT khong hop le:", error);
+    }
+  });
+
+  function setMode(mode) {
+    if (!client.connected) {
+      alert("Web chưa kết nối MQTT Broker!");
+      return;
+    }
+
+    currentMode = mode;
+    updateModeUI();
+    client.publish(TOPIC_MODE, mode);
+  }
+
+  function controlDevice(device, command) {
+    if (!client.connected) {
+      alert("Web chưa kết nối MQTT Broker!");
+      return;
+    }
+
+    if (currentMode !== "MANUAL") {
+      alert("Hãy chọn chế độ MANUAL trước!");
+      return;
+    }
+
+    const topic = device === "fan" ? TOPIC_FAN : TOPIC_PUMP;
+    client.publish(topic, command);
+  }
+
+  updateModeUI();
+</script>
+</body>
+</html>
